@@ -3,6 +3,7 @@ import mongoose, { Schema, type InferSchemaType } from "mongoose";
 const StrokeSchema = new Schema(
   {
     roomId: { type: Schema.Types.ObjectId, ref: "Room", required: true },
+    pageId: { type: String, maxlength: 64 },
     strokeId: { type: String, required: true, maxlength: 100 },
     part: { type: Number, required: true, min: 0 },
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
@@ -17,6 +18,7 @@ const StrokeSchema = new Schema(
 );
 
 StrokeSchema.index({ roomId: 1, seq: 1 });
+StrokeSchema.index({ roomId: 1, pageId: 1, seq: 1 });
 StrokeSchema.index({ roomId: 1, strokeId: 1, part: 1 }, { unique: true });
 
 export type StrokeDocument = InferSchemaType<typeof StrokeSchema> & mongoose.Document;

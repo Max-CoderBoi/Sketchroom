@@ -1,6 +1,7 @@
 import bcrypt from "bcryptjs";
 import jwt, { type JwtPayload } from "jsonwebtoken";
 import type { NextRequest } from "next/server";
+import { connectToDatabase } from "@/lib/db";
 import { HttpError } from "@/lib/http";
 import User, { type UserDocument } from "@/models/User";
 
@@ -18,9 +19,10 @@ export async function getUserFromRequest(request: Request | NextRequest): Promis
   const authorization = request.headers.get("authorization");
   if (!authorization?.startsWith("Bearer ")) throw new HttpError(401, "Authentication required.");
 
+  const secret = jwtSecret();
   let payload: string | JwtPayload;
   try {
-    payload = jwt.verify(authorization.slice(7).trim(), jwtSecret());
+    payload = jwt.verify(authorization.slice(7).trim(), secret);
   } catch {
     throw new HttpError(401, "Invalid or expired token.");
   }
@@ -28,6 +30,7 @@ export async function getUserFromRequest(request: Request | NextRequest): Promis
     throw new HttpError(401, "Invalid or expired token.");
   }
 
+  await connectToDatabase();
   const user = await User.findById(payload.sub);
   if (!user) throw new HttpError(401, "Authentication required.");
   return user;

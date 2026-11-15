@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { getUserFromRequest } from "@/lib/auth";
-import { connectToDatabase } from "@/lib/db";
 import { errorResponse, json, readJson } from "@/lib/http";
 import { loadRoomForMember, publicRoom, requireOwner } from "@/lib/roomAccess";
 import { triggerRoomEvent } from "@/lib/pusher";
@@ -19,7 +18,6 @@ const patchSchema = z.object({
 
 export async function GET(request: Request, { params }: Context) {
   try {
-    await connectToDatabase();
     const user = await getUserFromRequest(request);
     const { code } = await params;
     const { room, role } = await loadRoomForMember(code, user._id.toString());
@@ -27,7 +25,7 @@ export async function GET(request: Request, { params }: Context) {
       .select("name color");
     return json({
       room: {
-        ...publicRoom(room, role),
+        ...publicRoom(room, role, user._id.toString()),
         members: room.members.map((member) => {
           const memberUser = users.find((candidate) => candidate._id.equals(member.userId));
           return {
@@ -47,7 +45,6 @@ export async function GET(request: Request, { params }: Context) {
 
 export async function PATCH(request: Request, { params }: Context) {
   try {
-    await connectToDatabase();
     const user = await getUserFromRequest(request);
     const { code } = await params;
     const { room, role } = await loadRoomForMember(code, user._id.toString());
@@ -58,7 +55,7 @@ export async function PATCH(request: Request, { params }: Context) {
     await room.save();
     const payload = { title: room.title, viewOnly: room.viewOnly };
     await triggerRoomEvent(room.code, "room-updated", payload);
-    return json({ room: publicRoom(room, role) });
+    return json({ room: publicRoom(room, role, user._id.toString()) });
   } catch (error) {
     return errorResponse(error);
   }
@@ -66,7 +63,6 @@ export async function PATCH(request: Request, { params }: Context) {
 
 export async function DELETE(request: Request, { params }: Context) {
   try {
-    await connectToDatabase();
     const user = await getUserFromRequest(request);
     const { code } = await params;
     const { room, role } = await loadRoomForMember(code, user._id.toString());

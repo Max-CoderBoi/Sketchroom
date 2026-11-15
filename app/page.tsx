@@ -1,16 +1,18 @@
 "use client";
 
 import { FormEvent, PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
 
 type User = { id: string; name: string; email: string; color: string };
 type Member = { userId: string; name: string; color: string; role: "owner" | "editor" | "viewer"; joinedAt: string };
+type BoardPage = { pageId: string; title: string; order: number; bookmarked: boolean };
 type Room = {
   id: string; code: string; title: string; ownerId: string; members: Member[];
   memberCount: number; viewOnly: boolean; strokeSeq: number; thumbnail: string | null;
-  role: Member["role"];
+  role: Member["role"]; pages: BoardPage[];
 };
 type Stroke = {
-  _id?: string; id?: string; strokeId: string; part: number; userId: string;
+  _id?: string; id?: string; pageId: string; strokeId: string; part: number; userId: string;
   tool: "pen" | "highlighter" | "line" | "rect" | "ellipse";
   color: string; width: number; points: number[]; seq: number;
 };
@@ -38,11 +40,40 @@ function displayError(error: unknown) {
   return error instanceof Error ? error.message : "Something went wrong.";
 }
 
+function renderStroke(stroke: Stroke, points = stroke.points) {
+  const coordinates = Array.from({ length: Math.floor(points.length / 2) }, (_, index) => [
+    points[index * 2] * 1000,
+    points[index * 2 + 1] * 625,
+  ]);
+  if (coordinates.length === 0) return null;
+  const [startX, startY] = coordinates[0];
+  const [endX, endY] = coordinates[coordinates.length - 1];
+  const key = `${stroke.strokeId}-${stroke.part}`;
+  const common = {
+    fill: "none",
+    stroke: stroke.color,
+    strokeWidth: stroke.width * 1000,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    opacity: stroke.tool === "highlighter" ? 0.35 : 1,
+  };
+  if (stroke.tool === "line") return <line key={key} {...common} x1={startX} y1={startY} x2={endX} y2={endY} />;
+  if (stroke.tool === "rect") {
+    return <rect key={key} {...common} x={Math.min(startX, endX)} y={Math.min(startY, endY)} width={Math.abs(endX - startX)} height={Math.abs(endY - startY)} />;
+  }
+  if (stroke.tool === "ellipse") {
+    return <ellipse key={key} {...common} cx={(startX + endX) / 2} cy={(startY + endY) / 2} rx={Math.abs(endX - startX) / 2} ry={Math.abs(endY - startY) / 2} />;
+  }
+  const path = coordinates.map(([x, y], index) => `${index === 0 ? "M" : "L"} ${x} ${y}`).join(" ");
+  return <path key={key} {...common} d={path} />;
+}
+
 export default function Home() {
   const [token, setToken] = useState("");
   const [user, setUser] = useState<User | null>(null);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [activeRoom, setActiveRoom] = useState<Room | null>(null);
+  const [activePageId, setActivePageId] = useState("");
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [mode, setMode] = useState<"login" | "register">("login");
@@ -58,10 +89,16 @@ export default function Home() {
   const [draftTitle, setDraftTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const draft = useRef<number[]>([]);
+  const pageLoadVersion = useRef(0);
   const drawing = useRef(false);
+  const [livePoints, setLivePoints] = useState<number[]>([]);
+  const [isDrawing, setIsDrawing] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const maxSeq = useMemo(() => Math.max(0, ...strokes.map((stroke) => stroke.seq ?? 0)), [strokes]);
+  const activeRoomCode = activeRoom?.code;
+  const currentPage = activeRoom?.pages.find((page) => page.pageId === activePageId)
+    ?? activeRoom?.pages[0];
+  const currentPageId = currentPage?.pageId;
   const canDraw = activeRoom?.role !== "viewer" && (!activeRoom?.viewOnly || activeRoom.role === "owner");
   const isOwner = activeRoom?.role === "owner";
 
@@ -71,12 +108,18 @@ export default function Home() {
   }, []);
 
   const loadRoom = useCallback(async (roomCode: string, authToken: string) => {
-    const [roomData, strokeData, messageData] = await Promise.all([
-      api<{ room: Room }>(`/rooms/${roomCode}`, authToken),
-      api<{ strokes: Stroke[] }>(`/rooms/${roomCode}/strokes`, authToken),
+    const requestVersion = ++pageLoadVersion.current;
+    const roomData = await api<{ room: Room }>(`/rooms/${roomCode}`, authToken);
+    const pages = roomData.room.pages.slice().sort((a, b) => a.order - b.order);
+    const initialPage = pages.find((page) => page.bookmarked) ?? pages[0];
+    if (!initialPage) throw new Error("This board does not have any pages.");
+    const [strokeData, messageData] = await Promise.all([
+      api<{ strokes: Stroke[] }>(`/rooms/${roomCode}/strokes?pageId=${initialPage.pageId}`, authToken),
       api<{ messages: ChatMessage[] }>(`/rooms/${roomCode}/messages`, authToken),
     ]);
+    if (pageLoadVersion.current !== requestVersion) return;
     setActiveRoom(roomData.room);
+    setActivePageId(initialPage.pageId);
     setDraftTitle(roomData.room.title);
     setStrokes(strokeData.strokes);
     setMessages(messageData.messages);
@@ -85,10 +128,10 @@ export default function Home() {
   useEffect(() => {
     const savedToken = window.localStorage.getItem("sketchroom-token");
     if (!savedToken) return;
-    setToken(savedToken);
     void (async () => {
       try {
         const data = await api<{ user: User }>("/auth/me", savedToken);
+        setToken(savedToken);
         setUser(data.user);
         await loadRooms(savedToken);
       } catch {
@@ -99,19 +142,27 @@ export default function Home() {
   }, [loadRooms]);
 
   useEffect(() => {
-    if (!token || !activeRoom) return;
+    if (!token || !activeRoomCode || !currentPageId) return;
     const timer = window.setInterval(() => {
       void (async () => {
+        let requestVersion = pageLoadVersion.current;
         try {
-          const [strokeData, messageData, roomData] = await Promise.all([
-            api<{ strokes: Stroke[] }>(`/rooms/${activeRoom.code}/strokes?afterSeq=${maxSeq}`, token),
-            api<{ messages: ChatMessage[] }>(`/rooms/${activeRoom.code}/messages`, token),
-            api<{ room: Room }>(`/rooms/${activeRoom.code}`, token),
-          ]);
-          if (strokeData.strokes.length) {
-            setStrokes((current) => [...current, ...strokeData.strokes.filter((next) =>
-              !current.some((existing) => existing.strokeId === next.strokeId && existing.part === next.part))]);
+          const roomData = await api<{ room: Room }>(`/rooms/${activeRoomCode}`, token);
+          if (pageLoadVersion.current !== requestVersion) return;
+          let pageId = currentPageId;
+          if (!roomData.room.pages.some((page) => page.pageId === pageId)) {
+            pageId = roomData.room.pages[0]?.pageId;
+            if (!pageId) throw new Error("This board does not have any pages.");
+            requestVersion = ++pageLoadVersion.current;
+            setActivePageId(pageId);
+            setStrokes([]);
           }
+          const [strokeData, messageData] = await Promise.all([
+            api<{ strokes: Stroke[] }>(`/rooms/${activeRoomCode}/strokes?pageId=${pageId}`, token),
+            api<{ messages: ChatMessage[] }>(`/rooms/${activeRoomCode}/messages`, token),
+          ]);
+          if (pageLoadVersion.current !== requestVersion) return;
+          setStrokes(strokeData.strokes);
           setMessages(messageData.messages);
           setActiveRoom(roomData.room);
         } catch {
@@ -120,7 +171,7 @@ export default function Home() {
       })();
     }, 2500);
     return () => window.clearInterval(timer);
-  }, [activeRoom, maxSeq, token]);
+  }, [activeRoomCode, currentPageId, token]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -216,30 +267,33 @@ export default function Home() {
     event.currentTarget.setPointerCapture(event.pointerId);
     drawing.current = true;
     draft.current = pointFromEvent(event);
-    setStrokes((current) => [...current]);
+    setLivePoints([...draft.current]);
+    setIsDrawing(true);
   }
 
   function moveStroke(event: PointerEvent<SVGSVGElement>) {
     if (!drawing.current) return;
     draft.current.push(...pointFromEvent(event));
-    setStrokes((current) => [...current]);
+    setLivePoints([...draft.current]);
   }
 
   async function endStroke() {
-    if (!drawing.current || !activeRoom || !token) return;
+    if (!drawing.current || !activeRoom || !currentPageId || !token) return;
     drawing.current = false;
     const points = draft.current;
     draft.current = [];
+    setLivePoints([]);
+    setIsDrawing(false);
     if (points.length < 4) return;
     const strokeId = crypto.randomUUID();
     const pending: Stroke = {
-      strokeId, part: 0, userId: user?.id ?? "", tool, color, width, points, seq: 0,
+      pageId: currentPageId, strokeId, part: 0, userId: user?.id ?? "", tool, color, width, points, seq: 0,
     };
     setStrokes((current) => [...current, pending]);
     try {
       const data = await api<{ stroke: Stroke }>(`/rooms/${activeRoom.code}/strokes`, token, {
         method: "POST",
-        body: JSON.stringify({ strokeId, part: 0, tool, color, width, points }),
+        body: JSON.stringify({ pageId: currentPageId, strokeId, part: 0, tool, color, width, points }),
       });
       setStrokes((current) => current.map((stroke) =>
         stroke.strokeId === strokeId && stroke.part === 0 ? data.stroke : stroke));
@@ -286,6 +340,103 @@ export default function Home() {
     await runAction(async () => {
       await api(`/rooms/${activeRoom.code}/members/${member.userId}`, token, { method: "DELETE" });
       await loadRoom(activeRoom.code, token);
+    });
+  }
+
+  async function selectPage(pageId: string) {
+    if (!activeRoom || pageId === activePageId) return;
+    const requestVersion = ++pageLoadVersion.current;
+    setActivePageId(pageId);
+    setStrokes([]);
+    try {
+      const data = await api<{ strokes: Stroke[] }>(
+        `/rooms/${activeRoom.code}/strokes?pageId=${pageId}`,
+        token,
+      );
+      if (pageLoadVersion.current === requestVersion) setStrokes(data.strokes);
+    } catch (reason) {
+      if (pageLoadVersion.current === requestVersion) setError(displayError(reason));
+    }
+  }
+
+  function updatePage(page: BoardPage) {
+    setActiveRoom((room) => room
+      ? { ...room, pages: room.pages.map((item) => item.pageId === page.pageId ? page : item) }
+      : room);
+  }
+
+  async function addPage() {
+    if (!activeRoom) return;
+    await runAction(async () => {
+      const data = await api<{ page: BoardPage }>(`/rooms/${activeRoom.code}/pages`, token, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      pageLoadVersion.current += 1;
+      setActiveRoom((room) => room
+        ? {
+          ...room,
+          pages: room.pages.some((page) => page.pageId === data.page.pageId)
+            ? room.pages
+            : [...room.pages, data.page],
+        }
+        : room);
+      setActivePageId(data.page.pageId);
+      setStrokes([]);
+      setNotice(`${data.page.title} added.`);
+    });
+  }
+
+  async function toggleBookmark(page: BoardPage) {
+    if (!activeRoom) return;
+    await runAction(async () => {
+      const data = await api<{ page: BoardPage }>(
+        `/rooms/${activeRoom.code}/pages/${page.pageId}`,
+        token,
+        { method: "PATCH", body: JSON.stringify({ bookmarked: !page.bookmarked }) },
+      );
+      updatePage(data.page);
+      setNotice(data.page.bookmarked ? "Page bookmarked." : "Bookmark removed.");
+    });
+  }
+
+  async function renamePage(page: BoardPage) {
+    if (!activeRoom || !canDraw) return;
+    const title = window.prompt("Rename page", page.title)?.trim();
+    if (!title || title === page.title) return;
+    await runAction(async () => {
+      const data = await api<{ page: BoardPage }>(
+        `/rooms/${activeRoom.code}/pages/${page.pageId}`,
+        token,
+        { method: "PATCH", body: JSON.stringify({ title }) },
+      );
+      updatePage(data.page);
+      setNotice("Page renamed.");
+    });
+  }
+
+  async function deletePage(page: BoardPage) {
+    if (!activeRoom || !canDraw || activeRoom.pages.length <= 1) return;
+    if (!window.confirm(`Delete "${page.title}" and all of its drawings?`)) return;
+    await runAction(async () => {
+      await api(`/rooms/${activeRoom.code}/pages/${page.pageId}`, token, { method: "DELETE" });
+      const remaining = activeRoom.pages
+        .filter((item) => item.pageId !== page.pageId)
+        .sort((a, b) => a.order - b.order);
+      const next = remaining[0];
+      setActiveRoom((room) => room ? { ...room, pages: remaining } : room);
+      if (activePageId === page.pageId && next) {
+        const requestVersion = ++pageLoadVersion.current;
+        setActivePageId(next.pageId);
+        const data = await api<{ strokes: Stroke[] }>(
+          `/rooms/${activeRoom.code}/strokes?pageId=${next.pageId}`,
+          token,
+        );
+        if (pageLoadVersion.current === requestVersion) setStrokes(data.strokes);
+      } else {
+        pageLoadVersion.current += 1;
+      }
+      setNotice(`${page.title} deleted.`);
     });
   }
 
@@ -367,7 +518,7 @@ export default function Home() {
               <form className="action-card" onSubmit={joinRoom}><div className="action-icon mint">↗</div><h3>Join a board</h3><p>Have a room code? Enter it to jump in.</p><div className="inline-form"><input className="code-input" value={joinCode} onChange={(event) => setJoinCode(event.target.value.toUpperCase())} maxLength={6} required placeholder="6-digit code" /><button className="secondary-button" disabled={busy}>Join</button></div></form>
             </div>
             <div className="section-heading"><h3>Your recent boards</h3><span>{rooms.length} total</span></div>
-            {rooms.length ? <div className="board-grid">{rooms.map((room) => <button key={room.code} className="board-card" onClick={() => void runAction(() => loadRoom(room.code, token))}><div className="board-preview">{room.thumbnail ? <img src={room.thumbnail} alt="" /> : <div className="preview-lines"><span /><span /><span /></div>}<span className="board-member-count">{room.memberCount} people</span></div><span className="board-card-title">{room.title}</span><small>{room.code} · {room.role}</small></button>)}</div> : <div className="empty-state"><span>⌘</span><strong>No boards just yet</strong><p>Create your first board above, or ask a teammate for an invite code.</p></div>}
+            {rooms.length ? <div className="board-grid">{rooms.map((room) => <button key={room.code} className="board-card" onClick={() => void runAction(() => loadRoom(room.code, token))}><div className="board-preview">{room.thumbnail ? <Image src={room.thumbnail} alt="" width={400} height={250} unoptimized /> : <div className="preview-lines"><span /><span /><span /></div>}<span className="board-member-count">{room.memberCount} people</span></div><span className="board-card-title">{room.title}</span><small>{room.code} · {room.role}</small></button>)}</div> : <div className="empty-state"><span>⌘</span><strong>No boards just yet</strong><p>Create your first board above, or ask a teammate for an invite code.</p></div>}
           </div>
         ) : (
           <div className="board-page">
@@ -375,12 +526,36 @@ export default function Home() {
               <button className="text-button back-button" onClick={() => { setActiveRoom(null); void loadRooms(token); }}>← All boards</button>
               <div className="room-meta"><button className="room-code" onClick={() => void copyRoomCode()} title="Copy invite code">{activeRoom.code} <span>⧉</span></button><span className="member-count">{activeRoom.memberCount} members</span></div>
               <div className="room-actions">
-                {isOwner && <><button className="text-button" onClick={() => void runAction(async () => { const data = await api<{ room: Room }>(`/rooms/${activeRoom.code}`, token, { method: "PATCH", body: JSON.stringify({ title: draftTitle }) }); setActiveRoom(data.room); setNotice("Board title saved."); })}>Save title</button><button className="text-button danger-text" onClick={() => void runAction(async () => { if (!window.confirm("Clear every stroke on this board?")) return; await api(`/rooms/${activeRoom.code}/clear`, token, { method: "POST", body: "{}" }); setStrokes([]); setNotice("Board cleared."); })}>Clear</button></>}
+                {isOwner && <><button className="text-button" onClick={() => void runAction(async () => { await api(`/rooms/${activeRoom.code}`, token, { method: "PATCH", body: JSON.stringify({ title: draftTitle }) }); setActiveRoom((current) => current ? { ...current, title: draftTitle } : current); setNotice("Board title saved."); })}>Save title</button><button className="text-button danger-text" onClick={() => void runAction(async () => { if (!currentPageId || !window.confirm(`Clear all drawings on ${currentPage?.title ?? "this page"}?`)) return; await api(`/rooms/${activeRoom.code}/clear`, token, { method: "POST", body: JSON.stringify({ pageId: currentPageId }) }); setStrokes([]); setNotice("Page cleared."); })}>Clear page</button></>}
                 <button className="text-button danger-text" onClick={() => void runAction(async () => { if (isOwner) { if (!window.confirm("Delete this board and its history?")) return; await api(`/rooms/${activeRoom.code}`, token, { method: "DELETE" }); } else { await api(`/rooms/${activeRoom.code}/leave`, token, { method: "POST", body: "{}" }); } setActiveRoom(null); await loadRooms(token); setNotice(isOwner ? "Board deleted." : "You left the board."); })}>{isOwner ? "Delete board" : "Leave board"}</button>
               </div>
             </div>
 
-            {isOwner && <div className="room-settings"><label>Board title<input value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} maxLength={80} /></label><label className="toggle-label"><input type="checkbox" checked={activeRoom.viewOnly} onChange={(event) => void runAction(async () => { const data = await api<{ room: Room }>(`/rooms/${activeRoom.code}`, token, { method: "PATCH", body: JSON.stringify({ viewOnly: event.target.checked }) }); setActiveRoom(data.room); })} /> View-only mode</label></div>}
+            {isOwner && <div className="room-settings"><label>Board title<input value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} maxLength={80} /></label><label className="toggle-label"><input type="checkbox" checked={activeRoom.viewOnly} onChange={(event) => void runAction(async () => { const viewOnly = event.target.checked; await api(`/rooms/${activeRoom.code}`, token, { method: "PATCH", body: JSON.stringify({ viewOnly }) }); setActiveRoom((current) => current ? { ...current, viewOnly } : current); })} /> View-only mode</label></div>}
+
+            <div className="page-strip">
+              <div className="page-tabs" role="tablist" aria-label="Board pages">
+                {activeRoom.pages.slice().sort((a, b) => a.order - b.order).map((page) => (
+                  <div className={`page-tab-item ${currentPageId === page.pageId ? "selected-page" : ""}`} key={page.pageId}>
+                    <button className="page-tab" role="tab" aria-selected={currentPageId === page.pageId}
+                      onClick={() => void selectPage(page.pageId)} onDoubleClick={() => void renamePage(page)}>
+                      <span>{page.title}</span>
+                    </button>
+                    <button className={`bookmark-button ${page.bookmarked ? "bookmarked" : ""}`}
+                      title={page.bookmarked ? "Remove bookmark" : "Bookmark page"}
+                      aria-label={page.bookmarked ? `Remove bookmark from ${page.title}` : `Bookmark ${page.title}`}
+                      onClick={() => void toggleBookmark(page)}>{page.bookmarked ? "★" : "☆"}</button>
+                    {canDraw && <button className="page-more-button" title={`Rename ${page.title}`}
+                      aria-label={`Rename ${page.title}`} onClick={() => void renamePage(page)}>···</button>}
+                  </div>
+                ))}
+              </div>
+              <div className="page-strip-actions">
+                {canDraw && currentPage && activeRoom.pages.length > 1 && <button className="page-delete-button"
+                  title={`Delete ${currentPage.title}`} onClick={() => void deletePage(currentPage)}>Delete page</button>}
+                {canDraw && <button className="new-page-button" onClick={() => void addPage()} disabled={busy}>＋ New page</button>}
+              </div>
+            </div>
 
             <div className="canvas-layout">
               <div className="canvas-column">
@@ -394,17 +569,15 @@ export default function Home() {
                   <svg ref={svgRef} viewBox="0 0 1000 625" preserveAspectRatio="none"
                     onPointerDown={startStroke} onPointerMove={moveStroke}
                     onPointerUp={() => void endStroke()} onPointerCancel={() => void endStroke()}>
-                    {strokes.map((stroke, index) => {
-                      const allPoints = drawing.current && index === strokes.length - 1 ? draft.current : stroke.points;
-                      const pairs = Array.from({ length: Math.floor(allPoints.length / 2) }, (_, i) => [allPoints[i * 2] * 1000, allPoints[i * 2 + 1] * 625]);
-                      const path = pairs.map(([x, y], i) => `${i === 0 ? "M" : "L"} ${x} ${y}`).join(" ");
-                      return <path key={`${stroke.strokeId}-${stroke.part}`} d={path} fill="none" stroke={stroke.color} strokeWidth={stroke.width * 1000} strokeLinecap="round" strokeLinejoin="round" opacity={stroke.tool === "highlighter" ? 0.35 : 1} />;
+                    {strokes.map((stroke) => renderStroke(stroke))}
+                    {isDrawing && livePoints.length >= 2 && renderStroke({
+                      pageId: currentPageId ?? "", strokeId: "live", part: 0, userId: user.id,
+                      tool, color, width, points: livePoints, seq: 0,
                     })}
-                    {drawing.current && draft.current.length >= 2 && <path d={Array.from({ length: Math.floor(draft.current.length / 2) }, (_, i) => `${i ? "L" : "M"} ${draft.current[i * 2] * 1000} ${draft.current[i * 2 + 1] * 625}`).join(" ")} fill="none" stroke={color} strokeWidth={width * 1000} strokeLinecap="round" strokeLinejoin="round" opacity={tool === "highlighter" ? 0.35 : 1} />}
                   </svg>
-                  {!strokes.length && !drawing.current && <div className="canvas-empty"><span>✳</span><p>Your next idea goes here.</p><small>Pick a tool and draw on the board.</small></div>}
+                  {!strokes.length && !isDrawing && <div className="canvas-empty"><span>✳</span><p>Your next idea goes here.</p><small>Pick a tool and draw on the board.</small></div>}
                 </div>
-                <div className="canvas-footer"><span>{strokes.length} stroke parts · autosaves to the API</span><span className="save-status"><i /> Saved</span></div>
+                <div className="canvas-footer"><span>{currentPage?.title ?? "Page"} · {strokes.length} stroke parts · autosaves to the API</span><span className="save-status"><i /> Saved</span></div>
                 {uniqueStrokes.length > 0 && <details className="stroke-history"><summary>Stroke history ({uniqueStrokes.length})</summary><div>{uniqueStrokes.slice(-20).reverse().map((stroke) => <div key={stroke.strokeId}><span><i style={{ background: stroke.color }} />{stroke.tool} · {stroke.userId === user.id ? "you" : "collaborator"} · #{stroke.seq || "pending"}</span><button className="text-button danger-text" onClick={() => void deleteStroke(stroke.strokeId)}>Remove</button></div>)}</div></details>}
               </div>
 

@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { getUserFromRequest } from "@/lib/auth";
-import { connectToDatabase } from "@/lib/db";
 import { errorResponse, HttpError, json, readJson } from "@/lib/http";
 import { loadRoomForMember, memberId, requireOwner } from "@/lib/roomAccess";
 import { triggerRoomEvent } from "@/lib/pusher";
@@ -11,7 +10,6 @@ const roleSchema = z.object({ role: z.enum(["editor", "viewer"]) });
 
 export async function PATCH(request: Request, { params }: Context) {
   try {
-    await connectToDatabase();
     const user = await getUserFromRequest(request);
     const { code, userId } = await params;
     const { room, role } = await loadRoomForMember(code, user._id.toString());
@@ -35,16 +33,15 @@ export async function PATCH(request: Request, { params }: Context) {
 
 export async function DELETE(request: Request, { params }: Context) {
   try {
-    await connectToDatabase();
     const user = await getUserFromRequest(request);
     const { code, userId } = await params;
     const { room, role } = await loadRoomForMember(code, user._id.toString());
     requireOwner(role);
     const targetId = memberId(userId);
     if (targetId.equals(room.ownerId)) throw new HttpError(400, "The room owner cannot be removed.");
-    const count = room.members.length;
-    room.members = room.members.filter((member) => !member.userId.equals(targetId));
-    if (room.members.length === count) throw new HttpError(404, "Room member not found.");
+    const target = room.members.find((member) => member.userId.equals(targetId));
+    if (!target) throw new HttpError(404, "Room member not found.");
+    room.members.pull({ userId: targetId });
     await room.save();
     await triggerRoomEvent(room.code, "member-kicked", { userId: targetId.toString() });
     return json({ message: "Member removed." });

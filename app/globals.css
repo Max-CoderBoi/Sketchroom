@@ -1,5 +1,3 @@
-@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap");
-
 :root {
   --ink: #20243a;
   --muted: #81869a;
@@ -125,6 +123,22 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .room-settings input { height: 35px; font-size: 11px; }
 .room-settings .toggle-label { display: flex; grid-auto-flow: column; align-items: center; gap: 7px; padding-bottom: 10px; font-size: 11px; }
 .toggle-label input { width: 15px; height: 15px; accent-color: var(--purple); }
+.page-strip { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 51px; margin-bottom: 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; padding: 6px 9px; }
+.page-tabs { display: flex; flex: 1; align-items: center; gap: 5px; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.page-tab-item { display: flex; align-items: center; flex: 0 0 auto; gap: 1px; border: 1px solid transparent; border-radius: 8px; background: #f7f7fa; }
+.page-tab-item.selected-page { border-color: #dedcff; background: #f1f0ff; }
+.page-tab { max-width: 145px; overflow: hidden; border: 0; border-radius: 7px 0 0 7px; background: transparent; padding: 8px 10px; color: #777c8f; font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.selected-page .page-tab { color: #5047d7; }
+.bookmark-button, .page-more-button { display: grid; place-items: center; width: 26px; height: 28px; border: 0; background: transparent; color: #a4a8b5; font-size: 16px; cursor: pointer; }
+.bookmark-button.bookmarked { color: #e2a72e; }
+.page-more-button { width: 23px; font-size: 15px; letter-spacing: 1px; }
+.page-more-button:hover, .bookmark-button:hover { color: var(--purple); }
+.page-strip-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; }
+.new-page-button, .page-delete-button { height: 31px; border: 1px solid #e8e8f0; border-radius: 7px; background: #fff; padding: 0 9px; color: #686e83; font-size: 10px; font-weight: 600; white-space: nowrap; cursor: pointer; }
+.new-page-button { border-color: #dcd9ff; background: #f5f4ff; color: #554bd6; }
+.page-delete-button { color: #bf5964; }
+.new-page-button:hover:not(:disabled) { background: #eeedff; }
+.page-delete-button:hover { background: #fff5f5; }
 .canvas-layout { display: grid; grid-template-columns: minmax(0, 1fr) 278px; align-items: start; gap: 17px; }
 .canvas-column { min-width: 0; }
 .drawing-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; border: 1px solid var(--line); border-radius: 10px 10px 0 0; background: #fff; padding: 9px 12px; }
@@ -226,6 +240,10 @@ button:disabled { cursor: not-allowed; opacity: .58; }
   .room-settings { align-items: start; flex-direction: column; gap: 8px; }
   .room-settings label:first-child { width: 100%; }
   .room-settings .toggle-label { padding: 0; }
+  .page-strip { align-items: stretch; flex-direction: column; gap: 6px; }
+  .page-tabs { min-height: 36px; }
+  .page-strip-actions { justify-content: flex-end; }
+  .page-tab { max-width: 125px; }
   .drawing-tools { gap: 5px; }
   .tool { width: 27px; }
   .color-buttons { gap: 5px; padding-left: 7px; }

@@ -1,0 +1,183 @@
+@baseUrl = http://localhost:3000
+@token = replace-with-jwt
+@roomCode = ABC234
+@userId = replace-with-member-id
+@pageId = replace-with-page-id
+
+### Register (use a unique email)
+POST {{baseUrl}}/api/auth/register
+Content-Type: application/json
+
+{
+  "name": "Sketch Tester",
+  "email": "tester@example.edu",
+  "password": "change-this-password"
+}
+
+### Login
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "tester@example.edu",
+  "password": "change-this-password"
+}
+
+### Current user
+GET {{baseUrl}}/api/auth/me
+Authorization: Bearer {{token}}
+
+### Create room
+POST {{baseUrl}}/api/rooms
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "title": "Mini project ideas"
+}
+
+### Join room (use a second user's token to test collaboration)
+POST {{baseUrl}}/api/rooms/join
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "code": "{{roomCode}}"
+}
+
+### List rooms
+GET {{baseUrl}}/api/rooms
+Authorization: Bearer {{token}}
+
+### Room details
+GET {{baseUrl}}/api/rooms/{{roomCode}}
+Authorization: Bearer {{token}}
+
+### Add a page
+POST {{baseUrl}}/api/rooms/{{roomCode}}/pages
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "title": "Research notes"
+}
+
+### Bookmark a page for the current member
+PATCH {{baseUrl}}/api/rooms/{{roomCode}}/pages/{{pageId}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "bookmarked": true
+}
+
+### Rename a page (owner/editor)
+PATCH {{baseUrl}}/api/rooms/{{roomCode}}/pages/{{pageId}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "title": "Final concept"
+}
+
+### Delete a page and its strokes (keep at least one page)
+DELETE {{baseUrl}}/api/rooms/{{roomCode}}/pages/{{pageId}}
+Authorization: Bearer {{token}}
+
+### Update room settings (owner)
+PATCH {{baseUrl}}/api/rooms/{{roomCode}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "title": "Updated project ideas",
+  "viewOnly": false
+}
+
+### Add a stroke (owner/editor; retrying same strokeId+part is idempotent)
+POST {{baseUrl}}/api/rooms/{{roomCode}}/strokes
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "pageId": "{{pageId}}",
+  "strokeId": "demo-stroke-001",
+  "part": 0,
+  "tool": "pen",
+  "color": "#4F46E5",
+  "width": 0.004,
+  "points": [0.12, 0.18, 0.3, 0.25, 0.47, 0.33]
+}
+
+### List strokes for a specific page
+GET {{baseUrl}}/api/rooms/{{roomCode}}/strokes?pageId={{pageId}}&afterSeq=0&limit=2000
+Authorization: Bearer {{token}}
+
+### Remove a stroke (author or owner)
+DELETE {{baseUrl}}/api/rooms/{{roomCode}}/strokes/demo-stroke-001
+Authorization: Bearer {{token}}
+
+### Send a chat message
+POST {{baseUrl}}/api/rooms/{{roomCode}}/messages
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "text": "This is a test message."
+}
+
+### Read chat history
+GET {{baseUrl}}/api/rooms/{{roomCode}}/messages
+Authorization: Bearer {{token}}
+
+### Upload a tiny PNG thumbnail
+PUT {{baseUrl}}/api/rooms/{{roomCode}}/thumbnail
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lmkAAAAASUVORK5CYII="
+}
+
+### Change member role (owner)
+PATCH {{baseUrl}}/api/rooms/{{roomCode}}/members/{{userId}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "role": "viewer"
+}
+
+### Remove member (owner)
+DELETE {{baseUrl}}/api/rooms/{{roomCode}}/members/{{userId}}
+Authorization: Bearer {{token}}
+
+### Clear board (owner)
+POST {{baseUrl}}/api/rooms/{{roomCode}}/clear
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "pageId": "{{pageId}}"
+}
+
+### Leave room (non-owner)
+POST {{baseUrl}}/api/rooms/{{roomCode}}/leave
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{}
+
+### Pusher presence authorization (socket_id comes from Pusher client)
+POST {{baseUrl}}/api/pusher/auth
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "socket_id": "1234.5678",
+  "channel_name": "presence-room-{{roomCode}}"
+}
+
+### Delete room (owner; run last)
+DELETE {{baseUrl}}/api/rooms/{{roomCode}}
+Authorization: Bearer {{token}}

@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { getUserFromRequest } from "@/lib/auth";
-import { connectToDatabase } from "@/lib/db";
 import { errorResponse, HttpError, json, readJson } from "@/lib/http";
 import { loadRoomForMember } from "@/lib/roomAccess";
 import { triggerRoomEvent } from "@/lib/pusher";
@@ -12,7 +11,6 @@ const schema = z.object({ text: z.string().trim().min(1).max(500) });
 
 export async function GET(request: Request, { params }: Context) {
   try {
-    await connectToDatabase();
     const user = await getUserFromRequest(request);
     const { code } = await params;
     const { room } = await loadRoomForMember(code, user._id.toString());
@@ -25,7 +23,6 @@ export async function GET(request: Request, { params }: Context) {
 
 export async function POST(request: Request, { params }: Context) {
   try {
-    await connectToDatabase();
     const user = await getUserFromRequest(request);
     const { code } = await params;
     const { room } = await loadRoomForMember(code, user._id.toString());

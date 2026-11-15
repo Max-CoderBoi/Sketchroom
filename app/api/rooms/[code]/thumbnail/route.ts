@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { getUserFromRequest } from "@/lib/auth";
-import { connectToDatabase } from "@/lib/db";
 import { errorResponse, HttpError, json, readJson } from "@/lib/http";
 import { loadRoomForMember } from "@/lib/roomAccess";
 
@@ -12,14 +11,14 @@ const schema = z.object({
 
 export async function PUT(request: Request, { params }: Context) {
   try {
+    const user = await getUserFromRequest(request);
     const contentLength = Number(request.headers.get("content-length") ?? 0);
     if (contentLength > 140_000) throw new HttpError(413, "Thumbnail must be no larger than 100 KB.");
-    await connectToDatabase();
-    const user = await getUserFromRequest(request);
     const { code } = await params;
     const { room } = await loadRoomForMember(code, user._id.toString());
     const { image } = schema.parse(await readJson(request));
     const rawBase64 = image.replace(/^data:image\/png;base64,/, "");
+    if (rawBase64.length > 136_536) throw new HttpError(413, "Thumbnail must be no larger than 100 KB.");
     const bytes = Buffer.from(rawBase64, "base64");
     if (bytes.length > 100 * 1024) throw new HttpError(413, "Thumbnail must be no larger than 100 KB.");
     const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);

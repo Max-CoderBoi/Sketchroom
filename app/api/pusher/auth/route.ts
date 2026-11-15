@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { getUserFromRequest } from "@/lib/auth";
-import { connectToDatabase } from "@/lib/db";
 import { errorResponse, HttpError, json, readJson } from "@/lib/http";
 import { loadRoomForMember } from "@/lib/roomAccess";
 import { authorizePresenceChannel } from "@/lib/pusher";
@@ -14,7 +13,6 @@ const schema = z.object({
 
 export async function POST(request: Request) {
   try {
-    await connectToDatabase();
     const user = await getUserFromRequest(request);
     const body = schema.parse(await readJson(request));
     const code = body.channel_name.slice("presence-room-".length);
