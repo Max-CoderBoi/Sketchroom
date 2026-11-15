@@ -16,6 +16,13 @@ type Stroke = {
   tool: "pen" | "highlighter" | "line" | "rect" | "ellipse";
   color: string; width: number; points: number[]; seq: number;
 };
+type RedoStroke = {
+  strokeId: string;
+  tool: Stroke["tool"];
+  color: string;
+  width: number;
+  parts: number[][];
+};
 type ChatMessage = { id?: string; _id?: string; userId: string; userName: string; text: string; createdAt: string };
 type ApiResult<T> = T & { error?: string; details?: unknown };
 
@@ -75,6 +82,8 @@ export default function Home() {
   const [activeRoom, setActiveRoom] = useState<Room | null>(null);
   const [activePageId, setActivePageId] = useState("");
   const [strokes, setStrokes] = useState<Stroke[]>([]);
+  const [redoStack, setRedoStack] = useState<RedoStroke[]>([]);
+  const [historyBusy, setHistoryBusy] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [mode, setMode] = useState<"login" | "register">("login");
   const [formBusy, setFormBusy] = useState(false);
@@ -122,6 +131,7 @@ export default function Home() {
     setActivePageId(initialPage.pageId);
     setDraftTitle(roomData.room.title);
     setStrokes(strokeData.strokes);
+    setRedoStack([]);
     setMessages(messageData.messages);
   }, []);
 
@@ -286,29 +296,120 @@ export default function Home() {
     setIsDrawing(false);
     if (points.length < 4) return;
     const strokeId = crypto.randomUUID();
-    const pending: Stroke = {
-      pageId: currentPageId, strokeId, part: 0, userId: user?.id ?? "", tool, color, width, points, seq: 0,
-    };
-    setStrokes((current) => [...current, pending]);
+    const parts: number[][] = [];
+    for (let start = 0; start < points.length - 2; start += 498) {
+      parts.push(points.slice(start, Math.min(start + 500, points.length)));
+    }
+    const pending = parts.map((partPoints, part) => ({
+      pageId: currentPageId,
+      strokeId,
+      part,
+      userId: user?.id ?? "",
+      tool,
+      color,
+      width,
+      points: partPoints,
+      seq: 0,
+    }));
+    setRedoStack([]);
+    setStrokes((current) => [...current, ...pending]);
     try {
-      const data = await api<{ stroke: Stroke }>(`/rooms/${activeRoom.code}/strokes`, token, {
-        method: "POST",
-        body: JSON.stringify({ pageId: currentPageId, strokeId, part: 0, tool, color, width, points }),
-      });
-      setStrokes((current) => current.map((stroke) =>
-        stroke.strokeId === strokeId && stroke.part === 0 ? data.stroke : stroke));
+      for (let part = 0; part < parts.length; part += 1) {
+        const data = await api<{ stroke: Stroke }>(`/rooms/${activeRoom.code}/strokes`, token, {
+          method: "POST",
+          body: JSON.stringify({
+            pageId: currentPageId, strokeId, part, tool, color, width, points: parts[part],
+          }),
+        });
+        setStrokes((current) => current.map((stroke) =>
+          stroke.strokeId === strokeId && stroke.part === part ? data.stroke : stroke));
+      }
     } catch (reason) {
       setStrokes((current) => current.filter((stroke) => stroke.strokeId !== strokeId));
       setError(displayError(reason));
     }
   }
 
-  async function deleteStroke(strokeId: string) {
-    if (!activeRoom) return;
-    await runAction(async () => {
+  const latestOwnStroke = useMemo(() => {
+    if (!user || !currentPageId) return null;
+    const grouped = new Map<string, Stroke[]>();
+    for (const stroke of strokes) {
+      if (stroke.userId !== user.id || stroke.pageId !== currentPageId) continue;
+      const group = grouped.get(stroke.strokeId) ?? [];
+      group.push(stroke);
+      grouped.set(stroke.strokeId, group);
+    }
+    return [...grouped.values()]
+      .sort((a, b) => Math.max(...a.map((stroke) => stroke.seq)) - Math.max(...b.map((stroke) => stroke.seq)))
+      .at(-1) ?? null;
+  }, [strokes, user, currentPageId]);
+
+  async function undoStroke() {
+    if (!activeRoom || !currentPageId || !latestOwnStroke || historyBusy) return;
+    const group = [...latestOwnStroke].sort((a, b) => a.part - b.part);
+    const { strokeId, tool, color, width } = group[0];
+    setHistoryBusy(true);
+    setError("");
+    try {
       await api(`/rooms/${activeRoom.code}/strokes/${encodeURIComponent(strokeId)}`, token, { method: "DELETE" });
       setStrokes((current) => current.filter((stroke) => stroke.strokeId !== strokeId));
-    });
+      setRedoStack((current) => [...current, {
+        strokeId: crypto.randomUUID(),
+        tool,
+        color,
+        width,
+        parts: group.map((stroke) => stroke.points),
+      }]);
+      setNotice("Last stroke undone.");
+    } catch (reason) {
+      setError(displayError(reason));
+    } finally {
+      setHistoryBusy(false);
+    }
+  }
+
+  async function redoStroke() {
+    if (!activeRoom || !currentPageId || redoStack.length === 0 || historyBusy) return;
+    const redo = redoStack[redoStack.length - 1];
+    setHistoryBusy(true);
+    setError("");
+    const pending = redo.parts.map((points, part): Stroke => ({
+      pageId: currentPageId,
+      strokeId: redo.strokeId,
+      part,
+      userId: user?.id ?? "",
+      tool: redo.tool,
+      color: redo.color,
+      width: redo.width,
+      points,
+      seq: 0,
+    }));
+    setStrokes((current) => [...current, ...pending]);
+    try {
+      for (let part = 0; part < redo.parts.length; part += 1) {
+        const data = await api<{ stroke: Stroke }>(`/rooms/${activeRoom.code}/strokes`, token, {
+          method: "POST",
+          body: JSON.stringify({
+            pageId: currentPageId,
+            strokeId: redo.strokeId,
+            part,
+            tool: redo.tool,
+            color: redo.color,
+            width: redo.width,
+            points: redo.parts[part],
+          }),
+        });
+        setStrokes((current) => current.map((stroke) =>
+          stroke.strokeId === redo.strokeId && stroke.part === part ? data.stroke : stroke));
+      }
+      setRedoStack((current) => current.filter((entry) => entry.strokeId !== redo.strokeId));
+      setNotice("Stroke restored.");
+    } catch (reason) {
+      setStrokes((current) => current.filter((stroke) => stroke.strokeId !== redo.strokeId));
+      setError(displayError(reason));
+    } finally {
+      setHistoryBusy(false);
+    }
   }
 
   async function sendMessage(event: FormEvent<HTMLFormElement>) {
@@ -348,6 +449,7 @@ export default function Home() {
     const requestVersion = ++pageLoadVersion.current;
     setActivePageId(pageId);
     setStrokes([]);
+    setRedoStack([]);
     try {
       const data = await api<{ strokes: Stroke[] }>(
         `/rooms/${activeRoom.code}/strokes?pageId=${pageId}`,
@@ -383,6 +485,7 @@ export default function Home() {
         : room);
       setActivePageId(data.page.pageId);
       setStrokes([]);
+      setRedoStack([]);
       setNotice(`${data.page.title} added.`);
     });
   }
@@ -428,6 +531,7 @@ export default function Home() {
       if (activePageId === page.pageId && next) {
         const requestVersion = ++pageLoadVersion.current;
         setActivePageId(next.pageId);
+        setRedoStack([]);
         const data = await api<{ strokes: Stroke[] }>(
           `/rooms/${activeRoom.code}/strokes?pageId=${next.pageId}`,
           token,
@@ -449,12 +553,6 @@ export default function Home() {
       setNotice(`Room code: ${activeRoom.code}`);
     }
   }
-
-  const uniqueStrokes = useMemo(() => {
-    const map = new Map<string, Stroke>();
-    for (const stroke of strokes) map.set(stroke.strokeId, stroke);
-    return [...map.values()].sort((a, b) => a.seq === 0 ? 1 : b.seq === 0 ? -1 : a.seq - b.seq);
-  }, [strokes]);
 
   if (!user || !token) {
     return (
@@ -526,7 +624,7 @@ export default function Home() {
               <button className="text-button back-button" onClick={() => { setActiveRoom(null); void loadRooms(token); }}>← All boards</button>
               <div className="room-meta"><button className="room-code" onClick={() => void copyRoomCode()} title="Copy invite code">{activeRoom.code} <span>⧉</span></button><span className="member-count">{activeRoom.memberCount} members</span></div>
               <div className="room-actions">
-                {isOwner && <><button className="text-button" onClick={() => void runAction(async () => { await api(`/rooms/${activeRoom.code}`, token, { method: "PATCH", body: JSON.stringify({ title: draftTitle }) }); setActiveRoom((current) => current ? { ...current, title: draftTitle } : current); setNotice("Board title saved."); })}>Save title</button><button className="text-button danger-text" onClick={() => void runAction(async () => { if (!currentPageId || !window.confirm(`Clear all drawings on ${currentPage?.title ?? "this page"}?`)) return; await api(`/rooms/${activeRoom.code}/clear`, token, { method: "POST", body: JSON.stringify({ pageId: currentPageId }) }); setStrokes([]); setNotice("Page cleared."); })}>Clear page</button></>}
+                {isOwner && <><button className="text-button" onClick={() => void runAction(async () => { await api(`/rooms/${activeRoom.code}`, token, { method: "PATCH", body: JSON.stringify({ title: draftTitle }) }); setActiveRoom((current) => current ? { ...current, title: draftTitle } : current); setNotice("Board title saved."); })}>Save title</button><button className="text-button danger-text" onClick={() => void runAction(async () => { if (!currentPageId || !window.confirm(`Clear all drawings on ${currentPage?.title ?? "this page"}?`)) return; await api(`/rooms/${activeRoom.code}/clear`, token, { method: "POST", body: JSON.stringify({ pageId: currentPageId }) }); setStrokes([]); setRedoStack([]); setNotice("Page cleared."); })}>Clear page</button></>}
                 <button className="text-button danger-text" onClick={() => void runAction(async () => { if (isOwner) { if (!window.confirm("Delete this board and its history?")) return; await api(`/rooms/${activeRoom.code}`, token, { method: "DELETE" }); } else { await api(`/rooms/${activeRoom.code}/leave`, token, { method: "POST", body: "{}" }); } setActiveRoom(null); await loadRooms(token); setNotice(isOwner ? "Board deleted." : "You left the board."); })}>{isOwner ? "Delete board" : "Leave board"}</button>
               </div>
             </div>
@@ -562,6 +660,16 @@ export default function Home() {
                 <div className="drawing-tools">
                   <div className="tool-buttons">{(["pen", "highlighter", "line", "rect", "ellipse"] as const).map((value) => <button key={value} disabled={!canDraw} className={tool === value ? "tool active-tool" : "tool"} onClick={() => setTool(value)} title={value}>{value === "pen" ? "✎" : value === "highlighter" ? "▰" : value === "line" ? "／" : value === "rect" ? "▱" : "◯"}</button>)}</div>
                   <div className="color-buttons">{colors.map((value) => <button key={value} className={color === value ? "color-swatch selected-swatch" : "color-swatch"} style={{ background: value }} onClick={() => setColor(value)} aria-label={`Select ${value}`} />)}</div>
+                  <div className="history-tools">
+                    <button className="history-button" onClick={() => void undoStroke()}
+                      disabled={!canDraw || !latestOwnStroke || historyBusy} title="Undo your last stroke">
+                      <span aria-hidden="true">↶</span> Undo
+                    </button>
+                    <button className="history-button" onClick={() => void redoStroke()}
+                      disabled={!canDraw || redoStack.length === 0 || historyBusy} title="Redo your last undone stroke">
+                      <span aria-hidden="true">↷</span> Redo
+                    </button>
+                  </div>
                   <label className="width-picker" title="Stroke width"><span>Width</span><input type="range" min="0.001" max="0.018" step="0.001" value={width} onChange={(event) => setWidth(Number(event.target.value))} /></label>
                   {!canDraw && <span className="view-only-hint">Drawing is disabled for this room.</span>}
                 </div>
@@ -578,7 +686,6 @@ export default function Home() {
                   {!strokes.length && !isDrawing && <div className="canvas-empty"><span>✳</span><p>Your next idea goes here.</p><small>Pick a tool and draw on the board.</small></div>}
                 </div>
                 <div className="canvas-footer"><span>{currentPage?.title ?? "Page"} · {strokes.length} stroke parts · autosaves to the API</span><span className="save-status"><i /> Saved</span></div>
-                {uniqueStrokes.length > 0 && <details className="stroke-history"><summary>Stroke history ({uniqueStrokes.length})</summary><div>{uniqueStrokes.slice(-20).reverse().map((stroke) => <div key={stroke.strokeId}><span><i style={{ background: stroke.color }} />{stroke.tool} · {stroke.userId === user.id ? "you" : "collaborator"} · #{stroke.seq || "pending"}</span><button className="text-button danger-text" onClick={() => void deleteStroke(stroke.strokeId)}>Remove</button></div>)}</div></details>}
               </div>
 
               <aside className="right-panel">
