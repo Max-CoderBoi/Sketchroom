@@ -18,6 +18,18 @@ function getPusher() {
   return client;
 }
 
+export function isPusherConfigured() {
+  const { PUSHER_APP_ID, PUSHER_KEY, PUSHER_SECRET, PUSHER_CLUSTER } = process.env;
+  return Boolean(PUSHER_APP_ID && PUSHER_KEY && PUSHER_SECRET && PUSHER_CLUSTER);
+}
+
+export async function checkPusherConnection() {
+  const response = await getPusher().get({ path: "/channels" });
+  if (response.status !== 200) {
+    throw new Error(`Pusher health check returned ${response.status}.`);
+  }
+}
+
 export async function triggerRoomEvent(code: string, event: string, payload: unknown) {
   try {
     await getPusher().trigger(`presence-room-${code}`, event, payload);

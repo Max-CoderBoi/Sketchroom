@@ -34,7 +34,7 @@ The starter `.env.local` is only a local template. It contains no working creden
 
 1. Create a MongoDB project and cluster.
 2. Create a database user with a strong password. URL-encode special characters in the password in the URI.
-3. Add your development machine's current IP under **Network Access**. Avoid allowing all IP addresses except for short-lived diagnostics.
+3. Add your development machine's current IP under **Network Access**. For a backend deployed to Vercel, add `0.0.0.0/0` because Vercel serverless functions do not use a fixed outbound IP by default. Protect access with a dedicated database user and strong credentials.
 4. Copy the Node.js connection string into `MONGODB_URI`, replacing the username, password, and cluster host. Use a database name such as `sketchroom`.
 5. Atlas creates collections on the first write. Mongoose defines the collection indexes from the models.
 
@@ -76,6 +76,8 @@ All routes are under `/api`. Except for register and login, send `Authorization:
 | `POST` | `/api/auth/register` | Public; create account and return a JWT |
 | `POST` | `/api/auth/login` | Public; verify credentials and return a JWT |
 | `GET` | `/api/auth/me` | Authenticated; return current user |
+| `GET` | `/api/health` | Public; report whether MongoDB and Pusher are configured and reachable |
+| `GET` | `/api/stats` | Public; return stored user, board, stroke, and message counts |
 | `GET` | `/api/rooms` | Authenticated; list rooms for current member |
 | `POST` | `/api/rooms` | Authenticated; create board as owner; body `{ "title": "...", "viewOnly": false }` |
 | `POST` | `/api/rooms/join` | Authenticated; body `{ "code": "ABC234" }`; joins as editor |
@@ -166,18 +168,18 @@ Events are sent to the room's `presence-room-<CODE>` channel: `stroke-added`, `s
 
 1. **0:00–0:25 — Accounts:** Register as the board owner. Open a private/incognito window and register a second account.
 2. **0:25–0:55 — Create/invite:** Create a board in the first window, copy its code, join from the second window, and point out the editor role and member count.
-3. **0:55–1:25 — Pages and collaboration:** Add a page, draw different content on multiple pages, bookmark one, then draw in both windows and send a chat message. The temporary dashboard refreshes from the REST API every 2.5 seconds.
+3. **0:55–1:25 — Pages and collaboration:** Add a page, draw different content on multiple pages, bookmark one, then draw in both windows and send a chat message. The temporary dashboard refreshes from the REST API every second.
 4. **1:25–1:55 — Permissions:** Change the second account to viewer. Confirm the dashboard disables drawing and that a direct viewer stroke request returns `403`. Switch the role back to editor.
 5. **1:55–2:20 — Owner actions:** Rename the room, enable view-only mode, then disable it. Remove a stroke and clear the board.
 6. **2:20–2:45 — Presence:** With Pusher configured, authorize `presence-room-<CODE>` using the authenticated endpoint and show presence identity (`name`, `color`, `role`) and server events in a Pusher test client.
-7. **2:45–3:00 — Wrap:** Show the room list, chat history, and API request examples. Mention that the Next.js dashboard is only the test client; Flutter Web is a separate follow-up.
+7. **2:45–3:00 — Wrap:** Open `/api/health` to show backend connectivity and `/api/stats` to show stored data counts. Then show the room list, chat history, and API request examples. Mention that the Next.js dashboard is only the test client; Flutter Web is a separate follow-up.
 
 ## Deploy to Vercel
 
 1. Push this project folder to a Git provider, or import it into Vercel using `sketchroom` as the project root.
 2. In Vercel project settings, add `MONGODB_URI`, `JWT_SECRET`, `PUSHER_APP_ID`, `PUSHER_KEY`, `PUSHER_SECRET`, and `PUSHER_CLUSTER` for each environment. Keep secrets in Vercel, not source control.
-3. Ensure Atlas network access permits the deployment connection. Use Atlas's current Vercel/network guidance rather than embedding a broad database credential in source.
-4. Deploy. The Next.js route handlers explicitly run on the Node.js runtime, which supports Mongoose and the Pusher server SDK.
+3. Ensure Atlas network access permits the deployment connection. For Vercel deployments without Static IPs, allow `0.0.0.0/0`; use a dedicated database user with a strong password. For lower latency, place the Atlas cluster in Mumbai (`ap-south-1`) and use Pusher's Asia Pacific (`ap2`) cluster.
+4. `vercel.json` pins the deployment region to Mumbai (`bom1`). Deploy; the Next.js route handlers explicitly run on the Node.js runtime, which supports Mongoose and the Pusher server SDK.
 5. Verify `/api/auth/register`, then create and join a board from the deployed site. Configure any separately hosted Flutter client to use this deployment's HTTPS base URL.
 
 ## Validation

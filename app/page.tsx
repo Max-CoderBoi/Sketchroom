@@ -153,7 +153,10 @@ export default function Home() {
 
   useEffect(() => {
     if (!token || !activeRoomCode || !currentPageId) return;
+    let polling = false;
     const timer = window.setInterval(() => {
+      if (polling) return;
+      polling = true;
       void (async () => {
         let requestVersion = pageLoadVersion.current;
         try {
@@ -177,9 +180,11 @@ export default function Home() {
           setActiveRoom(roomData.room);
         } catch {
           // A transient poll failure should not interrupt drawing or chat.
+        } finally {
+          polling = false;
         }
       })();
-    }, 2500);
+    }, 1000);
     return () => window.clearInterval(timer);
   }, [activeRoomCode, currentPageId, token]);
 
